@@ -408,7 +408,7 @@ export default function PhotoboothPage() {
 
               {/* Frame SVG Overlay Preview in real-time */}
               <div
-                className="absolute inset-0 w-full h-full pointer-events-none z-10"
+                className="absolute inset-0 w-full h-full pointer-events-none z-10 [&>svg]:w-full [&>svg]:h-full [&>svg]:block"
                 dangerouslySetInnerHTML={{
                   __html: selectedTemplate.getSvgContent(
                     selectedTemplate.width,
