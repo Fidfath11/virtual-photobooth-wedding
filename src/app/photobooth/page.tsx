@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import confetti from "canvas-confetti";
 import { FRAME_TEMPLATES, FrameTemplate } from "./frameTemplates";
+import { renderCanvasPhotostripDecorations } from "./frameCanvasRenderer";
 
 export default function PhotoboothPage() {
   const router = useRouter();
@@ -331,16 +332,8 @@ export default function PhotoboothPage() {
         ctx.restore();
       }
 
-      // 3. Draw the aesthetic SVG Frame Overlay on top
-      const svgString = selectedTemplate.getSvgContent(targetWidth, targetHeight);
-      const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
-
-      try {
-        const frameImage = await loadImage(svgUrl);
-        ctx.drawImage(frameImage, 0, 0, targetWidth, targetHeight);
-      } catch (err) {
-        console.warn("SVG overlay rendering fallback:", err);
-      }
+      // 3. Draw the rich aesthetic Canvas 2D decorations directly on top (washi tape, wax seal, postage stamp, botanicals, barcodes)
+      renderCanvasPhotostripDecorations(ctx, selectedTemplate);
 
       // 4. Export high-quality Photostrip JPEG (0.82 compression for mobile sessionStorage)
       const finalDataUrl = canvas.toDataURL("image/jpeg", 0.82);
