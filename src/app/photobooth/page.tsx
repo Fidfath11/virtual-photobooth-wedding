@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   RefreshCw,
   X,
+  Layers,
 } from "lucide-react";
 import confetti from "canvas-confetti";
 import { FRAME_TEMPLATES, FrameTemplate } from "./frameTemplates";
@@ -23,17 +24,24 @@ import { FRAME_TEMPLATES, FrameTemplate } from "./frameTemplates";
 export default function PhotoboothPage() {
   const router = useRouter();
 
-  // State
-  const [selectedTemplate, setSelectedTemplate] = useState<FrameTemplate>(FRAME_TEMPLATES[0]);
+  // Template State
+  const [selectedTemplate, setSelectedTemplate] = useState<FrameTemplate>(FRAME_TEMPLATES[3]); // Default to 4-Cuts
+
+  // Camera State
   const [cameraFacingMode, setCameraFacingMode] = useState<"user" | "environment">("user");
   const [cameraState, setCameraState] = useState<"loading" | "ready" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState<string>("");
+  const [retryKey, setRetryKey] = useState<number>(0);
+
+  // Multi-Shot Collage State
+  const [capturedShots, setCapturedShots] = useState<string[]>([]);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [previewStep, setPreviewStep] = useState<"capture" | "preview">("capture");
   const [timerSetting, setTimerSetting] = useState<0 | 3>(3);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [flashActive, setFlashActive] = useState<boolean>(false);
   const [isProcessingCapture, setIsProcessingCapture] = useState<boolean>(false);
+  const [statusNotice, setStatusNotice] = useState<string>("");
   const [showNextModal, setShowNextModal] = useState<boolean>(false);
 
   // Refs
@@ -63,7 +71,7 @@ export default function PhotoboothPage() {
       osc.start();
       osc.stop(ctx.currentTime + 0.09);
     } catch {
-      // Audio playback failure is non-fatal
+      // Non-fatal
     }
   }, []);
 
@@ -80,8 +88,6 @@ export default function PhotoboothPage() {
       streamRef.current = null;
     }
   }, []);
-
-  const [retryKey, setRetryKey] = useState<number>(0);
 
   // Initialize camera stream via useEffect
   useEffect(() => {
@@ -163,7 +169,25 @@ export default function PhotoboothPage() {
     setCameraFacingMode((prev) => (prev === "user" ? "environment" : "user"));
   };
 
-  // Trigger Capture process
+  // Handle Changing Template
+  const handleSelectTemplate = (template: FrameTemplate) => {
+    setSelectedTemplate(template);
+    setCapturedShots([]); // Reset shots when changing collage format
+    setStatusNotice("");
+  };
+
+  // Helper to load an image from URL via Promise
+  const loadImage = (url: string): Promise<HTMLImageElement> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = (e) => reject(e);
+      img.src = url;
+    });
+  };
+
+  // Trigger Multi-Shot Capture
   const triggerCapture = () => {
     if (isProcessingCapture || cameraState !== "ready") return;
 
@@ -175,24 +199,20 @@ export default function PhotoboothPage() {
         if (current <= 0) {
           clearInterval(interval);
           setCountdown(null);
-          executeCanvasCapture();
+          snapSingleShot();
         } else {
           setCountdown(current);
         }
       }, 1000);
     } else {
-      executeCanvasCapture();
+      snapSingleShot();
     }
   };
 
-  // Perform HTML5 Canvas compositing with Promise-wrapped SVG overlay and 0.82 JPEG compression
-  const executeCanvasCapture = async () => {
+  // Snaps 1 single shot and either advances or triggers final compositing
+  const snapSingleShot = async () => {
     const video = videoRef.current;
-    const canvas = canvasRef.current;
-
-    if (!video || !canvas || video.videoWidth === 0 || video.videoHeight === 0) {
-      return;
-    }
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) return;
 
     setIsProcessingCapture(true);
 
@@ -202,7 +222,60 @@ export default function PhotoboothPage() {
     if (typeof navigator !== "undefined" && navigator.vibrate) {
       navigator.vibrate(60);
     }
-    setTimeout(() => setFlashActive(false), 280);
+    setTimeout(() => setFlashActive(false), 260);
+
+    // Calculate crop for slot aspect ratio
+    const currentSlotIndex = capturedShots.length;
+    const currentSlot = selectedTemplate.slots[currentSlotIndex] || selectedTemplate.slots[0];
+    const slotRatio = currentSlot.width / currentSlot.height;
+
+    const vWidth = video.videoWidth;
+    const vHeight = video.videoHeight;
+    const videoRatio = vWidth / vHeight;
+
+    let sx = 0, sy = 0, sWidth = vWidth, sHeight = vHeight;
+    if (videoRatio > slotRatio) {
+      sWidth = vHeight * slotRatio;
+      sx = (vWidth - sWidth) / 2;
+    } else {
+      sHeight = vWidth / slotRatio;
+      sy = (vHeight - sHeight) / 2;
+    }
+
+    // Temporary canvas for this single shot
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = currentSlot.width;
+    tempCanvas.height = currentSlot.height;
+    const tempCtx = tempCanvas.getContext("2d");
+
+    if (tempCtx) {
+      if (cameraFacingMode === "user") {
+        tempCtx.translate(tempCanvas.width, 0);
+        tempCtx.scale(-1, 1);
+      }
+      tempCtx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, tempCanvas.width, tempCanvas.height);
+    }
+
+    const shotDataUrl = tempCanvas.toDataURL("image/jpeg", 0.9);
+    const updatedShots = [...capturedShots, shotDataUrl];
+    setCapturedShots(updatedShots);
+
+    // Check if more shots are required for this collage template
+    if (updatedShots.length < selectedTemplate.photoCount) {
+      const nextPoseNumber = updatedShots.length + 1;
+      setStatusNotice(`Pose ${updatedShots.length} tersimpan! Siap untuk Pose ${nextPoseNumber}...`);
+      setIsProcessingCapture(false);
+    } else {
+      // All shots completed: Composite the whole Photostrip!
+      setStatusNotice("Menggabungkan seluruh foto kolase...");
+      await compositeFinalPhotostrip(updatedShots);
+    }
+  };
+
+  // Composite all captured shots into the final high-res Photostrip canvas
+  const compositeFinalPhotostrip = async (shots: string[]) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
     const targetWidth = selectedTemplate.width;
     const targetHeight = selectedTemplate.height;
@@ -216,86 +289,83 @@ export default function PhotoboothPage() {
       return;
     }
 
-    // 1. Calculate aspect ratio cover crop coordinates
-    const vWidth = video.videoWidth;
-    const vHeight = video.videoHeight;
-    const videoRatio = vWidth / vHeight;
-    const targetRatio = targetWidth / targetHeight;
-
-    let sx = 0;
-    let sy = 0;
-    let sWidth = vWidth;
-    let sHeight = vHeight;
-
-    if (videoRatio > targetRatio) {
-      // Video wider than frame: crop horizontal edges
-      sWidth = vHeight * targetRatio;
-      sx = (vWidth - sWidth) / 2;
-    } else {
-      // Video taller than frame: crop vertical edges
-      sHeight = vWidth / targetRatio;
-      sy = (vHeight - sHeight) / 2;
-    }
-
-    // 2. Draw camera video with mirroring if user/selfie camera
-    ctx.save();
-    if (cameraFacingMode === "user") {
-      ctx.translate(targetWidth, 0);
-      ctx.scale(-1, 1);
-    }
-    ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, targetWidth, targetHeight);
-    ctx.restore();
-
-    // 3. Composite SVG Frame Template on top using a Promise-wrapped Image
-    const svgString = selectedTemplate.getSvgContent(targetWidth, targetHeight);
-    const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
-
     try {
-      const frameImage = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.onload = () => resolve(img);
-        img.onerror = (e) => reject(e);
-        img.src = svgUrl;
-      });
+      // 1. Fill base background color
+      ctx.fillStyle = selectedTemplate.theme === "noir" ? "#09090B" : "#FAF8F5";
+      ctx.fillRect(0, 0, targetWidth, targetHeight);
 
-      ctx.drawImage(frameImage, 0, 0, targetWidth, targetHeight);
-    } catch (err) {
-      console.warn("SVG overlay rendering fallback:", err);
-    }
+      // 2. Draw each photo into its designated slot
+      for (let i = 0; i < shots.length; i++) {
+        const slot = selectedTemplate.slots[i];
+        if (!slot) continue;
 
-    // 4. Export JPEG with 0.82 compression ratio to prevent exceeding mobile browser sessionStorage quota
-    const finalDataUrl = canvas.toDataURL("image/jpeg", 0.82);
-    setCapturedImage(finalDataUrl);
+        const photoImg = await loadImage(shots[i]);
 
-    // Save directly to sessionStorage
-    try {
-      sessionStorage.setItem("photobooth_photo", finalDataUrl);
-      sessionStorage.setItem("photobooth_template", selectedTemplate.id);
-      sessionStorage.setItem("photobooth_timestamp", new Date().toISOString());
-    } catch (e) {
-      console.warn("SessionStorage save warning:", e);
-    }
+        ctx.save();
+        // Create rounded rect clip for the slot
+        const rx = slot.rx || 14;
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(slot.x, slot.y, slot.width, slot.height, rx);
+        } else {
+          ctx.rect(slot.x, slot.y, slot.width, slot.height);
+        }
+        ctx.clip();
 
-    setPreviewStep("preview");
-    setIsProcessingCapture(false);
+        ctx.drawImage(photoImg, slot.x, slot.y, slot.width, slot.height);
+        ctx.restore();
+      }
 
-    // Trigger celebratory confetti
-    try {
-      confetti({
-        particleCount: 55,
-        spread: 60,
-        origin: { y: 0.7 },
-        colors: ["#D4AF37", "#FDF0A6", "#E0BFB8", "#FFFFFF"],
-      });
-    } catch {
-      // Confetti optional
+      // 3. Draw the aesthetic SVG Frame Overlay on top
+      const svgString = selectedTemplate.getSvgContent(targetWidth, targetHeight);
+      const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
+
+      try {
+        const frameImage = await loadImage(svgUrl);
+        ctx.drawImage(frameImage, 0, 0, targetWidth, targetHeight);
+      } catch (err) {
+        console.warn("SVG overlay rendering fallback:", err);
+      }
+
+      // 4. Export high-quality Photostrip JPEG (0.82 compression for mobile sessionStorage)
+      const finalDataUrl = canvas.toDataURL("image/jpeg", 0.82);
+      setCapturedImage(finalDataUrl);
+
+      // Save directly to sessionStorage
+      try {
+        sessionStorage.setItem("photobooth_photo", finalDataUrl);
+        sessionStorage.setItem("photobooth_template", selectedTemplate.id);
+        sessionStorage.setItem("photobooth_timestamp", new Date().toISOString());
+      } catch (e) {
+        console.warn("SessionStorage save warning:", e);
+      }
+
+      setPreviewStep("preview");
+      setIsProcessingCapture(false);
+      setStatusNotice("");
+
+      // Trigger celebratory confetti
+      try {
+        confetti({
+          particleCount: 75,
+          spread: 70,
+          origin: { y: 0.65 },
+          colors: ["#D4AF37", "#FDF0A6", "#E11D48", "#FFFFFF"],
+        });
+      } catch {
+        // Confetti optional
+      }
+    } catch (error) {
+      console.error("Collage composition error:", error);
+      setIsProcessingCapture(false);
     }
   };
 
-  // Retake photo
-  const handleRetake = () => {
+  // Reset / Retake all photos
+  const handleRetakeAll = () => {
+    setCapturedShots([]);
     setCapturedImage(null);
+    setStatusNotice("");
     setPreviewStep("capture");
   };
 
@@ -304,7 +374,7 @@ export default function PhotoboothPage() {
     if (!capturedImage) return;
     const link = document.createElement("a");
     link.href = capturedImage;
-    link.download = `wedding-photobooth-${Date.now()}.jpg`;
+    link.download = `photostrip-${selectedTemplate.id}-${Date.now()}.jpg`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -313,16 +383,13 @@ export default function PhotoboothPage() {
   // Proceed to Audio Recording stage
   const handleProceedToAudio = () => {
     if (!capturedImage) return;
-
-    try {
-      sessionStorage.setItem("photobooth_photo", capturedImage);
-      sessionStorage.setItem("photobooth_template", selectedTemplate.id);
-      sessionStorage.setItem("photobooth_timestamp", new Date().toISOString());
-    } catch {
-      // sessionStorage quota or security error
-    }
-
     setShowNextModal(true);
+  };
+
+  // Current active slot aspect ratio for the live camera viewfinder
+  const currentSlot = selectedTemplate.slots[capturedShots.length] || selectedTemplate.slots[0];
+  const slotRatioStyle = {
+    aspectRatio: `${currentSlot.width} / ${currentSlot.height}`,
   };
 
   return (
@@ -340,13 +407,13 @@ export default function PhotoboothPage() {
             <h1 className="text-sm font-semibold tracking-wide text-amber-200/90 leading-tight">
               Virtual Photobooth
             </h1>
-            <p className="text-[11px] text-stone-400">Wedding Celebration</p>
+            <p className="text-[11px] text-stone-400">Wedding Photostrip Studio</p>
           </div>
         </div>
 
         {previewStep === "capture" && (
           <div className="flex items-center gap-2">
-            {/* Timer Toggle Button */}
+            {/* Timer Toggle */}
             <button
               onClick={() => setTimerSetting((prev) => (prev === 3 ? 0 : 3))}
               className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 ${
@@ -361,7 +428,7 @@ export default function PhotoboothPage() {
               <span>{timerSetting > 0 ? "3s" : "Off"}</span>
             </button>
 
-            {/* Flip Camera Button */}
+            {/* Flip Camera */}
             <button
               onClick={handleToggleFacingMode}
               disabled={cameraState !== "ready"}
@@ -386,14 +453,11 @@ export default function PhotoboothPage() {
 
         {previewStep === "capture" ? (
           /* ================= CAMERA CAPTURE VIEW ================= */
-          <div className="relative w-full h-full flex items-center justify-center">
-            {/* Aspect-Ratio Box containing Camera Video & Frame Overlay */}
+          <div className="relative w-full h-full flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-6 max-h-full">
+            {/* Live Camera Viewfinder Box */}
             <div
-              className={`relative overflow-hidden rounded-2xl shadow-2xl bg-black border border-stone-800 flex items-center justify-center max-h-full transition-all duration-300 ${
-                selectedTemplate.aspectRatio === "9:16"
-                  ? "aspect-[9/16] h-full max-w-[420px]"
-                  : "aspect-[3/4] h-full max-w-[480px]"
-              }`}
+              style={slotRatioStyle}
+              className="relative overflow-hidden rounded-2xl shadow-2xl bg-black border border-stone-800 flex items-center justify-center max-h-[72vh] sm:max-h-[80vh] w-auto transition-all duration-300"
             >
               {/* Camera Video Stream */}
               <video
@@ -406,16 +470,23 @@ export default function PhotoboothPage() {
                 }`}
               />
 
-              {/* Frame SVG Overlay Preview in real-time */}
-              <div
-                className="absolute inset-0 w-full h-full pointer-events-none z-10 [&>svg]:w-full [&>svg]:h-full [&>svg]:block"
-                dangerouslySetInnerHTML={{
-                  __html: selectedTemplate.getSvgContent(
-                    selectedTemplate.width,
-                    selectedTemplate.height
-                  ),
-                }}
-              />
+              {/* Status Overlay Badge (Pose X of N) */}
+              <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/70 backdrop-blur-md border border-amber-400/40 text-xs font-semibold text-amber-200">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                <span>Pose {capturedShots.length + 1} dari {selectedTemplate.photoCount}</span>
+              </div>
+
+              {/* Reset Sequence Button if at least 1 shot taken */}
+              {capturedShots.length > 0 && (
+                <button
+                  onClick={() => setCapturedShots([])}
+                  className="absolute top-3 right-3 z-20 flex items-center gap-1 px-2.5 py-1 rounded-full bg-stone-900/80 backdrop-blur-md border border-stone-700 text-[11px] font-medium text-stone-300 hover:text-white"
+                  title="Ulangi dari Pose 1"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Ulangi</span>
+                </button>
+              )}
 
               {/* Camera Loading Spinner */}
               {cameraState === "loading" && (
@@ -450,30 +521,70 @@ export default function PhotoboothPage() {
                 </div>
               )}
             </div>
+
+            {/* MINI PHOTOSTRIP PROGRESS DOCK (Shows slots 1..N with thumbnails) */}
+            <div className="flex sm:flex-col items-center justify-center gap-1.5 p-2 rounded-2xl bg-stone-900/80 backdrop-blur-md border border-stone-800 shrink-0">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-stone-400 sm:mb-1 hidden sm:block">
+                Slots
+              </span>
+              {Array.from({ length: selectedTemplate.photoCount }).map((_, idx) => {
+                const isTaken = idx < capturedShots.length;
+                const isCurrent = idx === capturedShots.length;
+                return (
+                  <div
+                    key={idx}
+                    className={`relative w-12 h-10 sm:w-14 sm:h-12 rounded-lg overflow-hidden border transition-all flex items-center justify-center ${
+                      isCurrent
+                        ? "border-amber-400 shadow-md shadow-amber-500/30 ring-2 ring-amber-400/40"
+                        : isTaken
+                        ? "border-emerald-500/80"
+                        : "border-stone-700/60 bg-stone-950/60"
+                    }`}
+                  >
+                    {isTaken ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={capturedShots[idx]}
+                        alt={`Pose ${idx + 1}`}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span
+                        className={`text-xs font-mono font-bold ${
+                          isCurrent ? "text-amber-300 animate-pulse" : "text-stone-600"
+                        }`}
+                      >
+                        {idx + 1}
+                      </span>
+                    )}
+
+                    {isTaken && (
+                      <div className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 flex items-center justify-center text-[8px] text-stone-950 font-bold">
+                        ✓
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         ) : (
           /* ================= PHOTO PREVIEW VIEW ================= */
-          <div className="relative w-full h-full flex flex-col items-center justify-center">
-            <div
-              className={`relative overflow-hidden rounded-2xl shadow-2xl border border-amber-400/30 max-h-full transition-all ${
-                selectedTemplate.aspectRatio === "9:16"
-                  ? "aspect-[9/16] h-full max-w-[420px]"
-                  : "aspect-[3/4] h-full max-w-[480px]"
-              }`}
-            >
+          <div className="relative w-full h-full flex flex-col items-center justify-center overflow-y-auto py-2">
+            <div className="relative max-h-[75vh] w-auto overflow-hidden rounded-2xl shadow-2xl border border-amber-400/30 transition-all flex items-center justify-center">
               {capturedImage && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={capturedImage}
-                  alt="Hasil Photobooth"
-                  className="w-full h-full object-contain bg-black"
+                  alt="Hasil Photostrip Kolase"
+                  className="max-h-[75vh] w-auto object-contain rounded-2xl bg-stone-900 shadow-2xl"
                 />
               )}
 
               {/* Success Badge */}
-              <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1 bg-stone-950/80 backdrop-blur-md rounded-full border border-amber-400/40 text-[11px] font-medium text-amber-200 shadow-lg">
+              <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1 bg-stone-950/85 backdrop-blur-md rounded-full border border-amber-400/40 text-[11px] font-medium text-amber-200 shadow-lg">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Foto Siap</span>
+                <span>Photostrip Siap</span>
               </div>
             </div>
           </div>
@@ -484,25 +595,29 @@ export default function PhotoboothPage() {
       <footer className="shrink-0 pb-6 pt-3 px-4 bg-stone-900/90 backdrop-blur-md border-t border-stone-800/80 z-20 flex flex-col gap-3">
         {previewStep === "capture" ? (
           <>
-            {/* Frame Template Selector Pills */}
+            {/* Status Notice if taking multiple poses */}
+            {statusNotice && (
+              <div className="text-center text-xs font-medium text-amber-300 animate-pulse -mt-1">
+                {statusNotice}
+              </div>
+            )}
+
+            {/* Collage Format Selector Pills */}
             <div className="flex items-center justify-center gap-2 overflow-x-auto py-1 scrollbar-none">
               {FRAME_TEMPLATES.map((tmpl) => {
                 const isSelected = selectedTemplate.id === tmpl.id;
                 return (
                   <button
                     key={tmpl.id}
-                    onClick={() => setSelectedTemplate(tmpl)}
-                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all duration-200 active:scale-95 ${
+                    onClick={() => handleSelectTemplate(tmpl)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all duration-200 active:scale-95 ${
                       isSelected
                         ? "bg-gradient-to-r from-amber-500/30 via-yellow-500/20 to-amber-500/30 text-amber-200 border border-amber-400/70 shadow-sm shadow-amber-500/20"
                         : "bg-stone-800/80 text-stone-400 border border-stone-700/60 hover:text-stone-200 hover:bg-stone-800"
                     }`}
                   >
-                    <span className="w-2 h-2 rounded-full bg-amber-400" />
+                    <Layers className="w-3 h-3 text-amber-400" />
                     <span>{tmpl.name}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-950/60 text-stone-400 font-mono">
-                      {tmpl.aspectRatio}
-                    </span>
                   </button>
                 );
               })}
@@ -514,7 +629,7 @@ export default function PhotoboothPage() {
                 onClick={triggerCapture}
                 disabled={cameraState !== "ready" || isProcessingCapture}
                 className="group relative flex items-center justify-center w-20 h-20 rounded-full transition-transform active:scale-90 disabled:opacity-50 disabled:pointer-events-none"
-                aria-label="Ambil Foto"
+                aria-label={`Ambil Foto ${capturedShots.length + 1}`}
               >
                 {/* Outer Ring */}
                 <div className="absolute inset-0 rounded-full border-4 border-amber-400/60 group-hover:border-amber-400 group-hover:scale-105 transition-all shadow-lg shadow-amber-500/10" />
@@ -529,21 +644,21 @@ export default function PhotoboothPage() {
           /* PREVIEW ACTION BUTTONS */
           <div className="flex flex-col gap-2.5 max-w-md mx-auto w-full">
             <div className="flex items-center gap-2">
-              {/* Retake Button */}
+              {/* Retake All Button */}
               <button
-                onClick={handleRetake}
+                onClick={handleRetakeAll}
                 className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-stone-800 hover:bg-stone-750 active:bg-stone-700 border border-stone-700 text-stone-200 text-sm font-semibold transition-all active:scale-95"
               >
                 <RotateCcw className="w-4 h-4 text-stone-400" />
                 <span>Foto Ulang</span>
               </button>
 
-              {/* Download Button */}
+              {/* Download Photostrip Button */}
               <button
                 onClick={handleDownload}
                 className="flex items-center justify-center p-3 rounded-xl bg-stone-800 hover:bg-stone-750 active:bg-stone-700 border border-stone-700 text-amber-200 transition-all active:scale-95"
-                title="Unduh Foto ke Galeri"
-                aria-label="Unduh Foto"
+                title="Unduh Photostrip ke Galeri"
+                aria-label="Unduh Photostrip"
               >
                 <Download className="w-5 h-5" />
               </button>
@@ -578,9 +693,9 @@ export default function PhotoboothPage() {
             </div>
 
             <div>
-              <h3 className="text-lg font-bold text-stone-100">Foto Berhasil Disimpan!</h3>
+              <h3 className="text-lg font-bold text-stone-100">Photostrip Berhasil Disimpan!</h3>
               <p className="text-xs text-stone-400 mt-1.5 leading-relaxed">
-                Foto kenangan Anda telah diamankan. Langkah berikutnya adalah merekam pesan suara & ucapan selamat untuk kedua mempelai.
+                Seluruh {selectedTemplate.photoCount} foto kolase Anda telah tergabung dengan indah. Langkah berikutnya adalah merekam pesan suara untuk kedua mempelai.
               </p>
             </div>
 
