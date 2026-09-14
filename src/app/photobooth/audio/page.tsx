@@ -363,27 +363,20 @@ export default function AudioRecordingPage() {
     document.body.removeChild(link);
   };
 
-  // Share photo (Web Share API or WhatsApp fallback)
-  const handleShare = async () => {
+  // Share specifically to Instagram Story / Native Share
+  const handleShareStory = async () => {
     if (!photoDataUrl) return;
 
     if (typeof navigator !== "undefined" && navigator.share) {
       try {
         const photoBlob = dataURLtoBlob(photoDataUrl);
-        const file = new File([photoBlob], `wedding-photobooth.jpg`, { type: "image/jpeg" });
+        const file = new File([photoBlob], `wedding-story-${Date.now()}.jpg`, { type: "image/jpeg" });
 
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
           await navigator.share({
             title: "Virtual Photobooth Wedding",
-            text: "Selamat menempuh hidup baru untuk kedua mempelai! ♥",
+            text: "Selamat menempuh hidup baru Romeo & Juliet! ♥ #WeddingPhotobooth",
             files: [file],
-          });
-          return;
-        } else {
-          await navigator.share({
-            title: "Virtual Photobooth Wedding",
-            text: "Selamat menempuh hidup baru untuk kedua mempelai! ♥",
-            url: window.location.origin,
           });
           return;
         }
@@ -392,11 +385,23 @@ export default function AudioRecordingPage() {
       }
     }
 
-    // Fallback: Open WhatsApp share text
+    // Fallback: download the file
+    handleDownloadPhoto();
+    alert("Foto photostrip berhasil diunduh ke galeri! Silakan buka Instagram dan buat Instagram Story Anda.");
+  };
+
+  // WhatsApp share
+  const handleShareWhatsApp = () => {
     const text = encodeURIComponent(
-      "Selamat menempuh hidup baru untuk kedua mempelai! Doa terbaik dari kami. ♥"
+      "Selamat menempuh hidup baru untuk Romeo & Juliet! Doa terbaik dari kami di momen terindah ini. ♥\n\nAbadikan juga fotomu di Virtual Photobooth: " +
+        (typeof window !== "undefined" ? window.location.origin : "")
     );
     window.open(`https://api.whatsapp.com/send?text=${text}`, "_blank");
+  };
+
+  // General share
+  const handleShare = async () => {
+    await handleShareStory();
   };
 
   // If no photo found in storage, show back to photobooth notice
@@ -680,27 +685,50 @@ export default function AudioRecordingPage() {
               </div>
             )}
 
-            {/* Action Buttons: Download & Share */}
+            {/* Action Buttons: Download, Share IG Story, Share WhatsApp, and View Gallery */}
             <div className="flex flex-col w-full gap-2.5 mt-2">
               <button
                 onClick={handleDownloadPhoto}
-                className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-stone-950 font-bold text-sm transition-all active:scale-95 shadow-md shadow-amber-500/20"
+                className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 via-amber-400 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-stone-950 font-bold text-sm transition-all active:scale-95 shadow-md shadow-amber-500/20"
               >
                 <Download className="w-4 h-4" />
                 <span>Unduh Foto ke Galeri HP</span>
               </button>
 
               <button
-                onClick={handleShare}
-                className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-200 font-semibold text-sm transition-all active:scale-95"
+                onClick={handleShareStory}
+                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-gradient-to-r from-pink-600 via-rose-500 to-amber-500 hover:opacity-90 text-white font-bold text-xs transition-all active:scale-95 shadow-md"
               >
-                <Share2 className="w-4 h-4 text-amber-400" />
-                <span>Bagikan ke Story / WhatsApp</span>
+                <Share2 className="w-4 h-4 text-white" />
+                <span>Bagikan ke Instagram Story 📸</span>
               </button>
+
+              <button
+                onClick={handleShareWhatsApp}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white font-semibold text-xs transition-all active:scale-95"
+              >
+                <span>Kirim Ucapan ke WhatsApp 💬</span>
+              </button>
+
+              <div className="flex items-center gap-2 w-full pt-1.5">
+                <Link
+                  href="/gallery"
+                  className="flex-1 py-3 px-3 rounded-xl bg-stone-900 hover:bg-stone-850 border border-amber-400/40 text-amber-200 text-xs font-semibold text-center transition-colors shadow-sm"
+                >
+                  Buka Galeri Mempelai 📖
+                </Link>
+
+                <Link
+                  href="/"
+                  className="py-3 px-4 rounded-xl bg-stone-900 hover:bg-stone-800 border border-stone-800 text-stone-400 hover:text-stone-200 text-xs font-medium text-center transition-colors"
+                >
+                  Beranda
+                </Link>
+              </div>
 
               <Link
                 href="/photobooth"
-                className="w-full py-3 text-xs font-semibold text-amber-300/90 hover:text-amber-200 transition-colors mt-1"
+                className="w-full py-2 text-xs font-semibold text-stone-400 hover:text-amber-300 transition-colors mt-0.5"
               >
                 Ambil Foto Lagi ➔
               </Link>
