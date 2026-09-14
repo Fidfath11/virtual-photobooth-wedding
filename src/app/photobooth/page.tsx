@@ -17,6 +17,8 @@ import {
   RefreshCw,
   X,
   Layers,
+  ArrowLeft,
+  Check,
 } from "lucide-react";
 import confetti from "canvas-confetti";
 import { FRAME_TEMPLATES, FrameTemplate } from "./frameTemplates";
@@ -24,8 +26,12 @@ import { FRAME_TEMPLATES, FrameTemplate } from "./frameTemplates";
 export default function PhotoboothPage() {
   const router = useRouter();
 
-  // Template State
-  const [selectedTemplate, setSelectedTemplate] = useState<FrameTemplate>(FRAME_TEMPLATES[3]); // Default to 4-Cuts
+  // Workflow State Machine: 1. select-frame -> 2. camera -> 3. preview
+  const [currentStep, setCurrentStep] = useState<"select-frame" | "camera" | "preview">("select-frame");
+
+  // Template State & Filter
+  const [selectedTemplate, setSelectedTemplate] = useState<FrameTemplate>(FRAME_TEMPLATES[3]); // Default 4-Cuts
+  const [filterCount, setFilterCount] = useState<number | "all">("all");
 
   // Camera State
   const [cameraFacingMode, setCameraFacingMode] = useState<"user" | "environment">("user");
@@ -36,7 +42,6 @@ export default function PhotoboothPage() {
   // Multi-Shot Collage State
   const [capturedShots, setCapturedShots] = useState<string[]>([]);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [previewStep, setPreviewStep] = useState<"capture" | "preview">("capture");
   const [timerSetting, setTimerSetting] = useState<0 | 3>(3);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [flashActive, setFlashActive] = useState<boolean>(false);
@@ -89,11 +94,14 @@ export default function PhotoboothPage() {
     }
   }, []);
 
-  // Initialize camera stream via useEffect
+  // Camera initialization: ONLY starts when currentStep === "camera"
   useEffect(() => {
     let isCancelled = false;
 
-    if (previewStep !== "capture") return;
+    if (currentStep !== "camera") {
+      stopCameraStream();
+      return;
+    }
 
     stopCameraStream();
 
@@ -155,7 +163,7 @@ export default function PhotoboothPage() {
       isCancelled = true;
       stopCameraStream();
     };
-  }, [cameraFacingMode, previewStep, retryKey, stopCameraStream]);
+  }, [cameraFacingMode, currentStep, retryKey, stopCameraStream]);
 
   // Retry Camera action
   const handleRetryCamera = () => {
@@ -169,11 +177,19 @@ export default function PhotoboothPage() {
     setCameraFacingMode((prev) => (prev === "user" ? "environment" : "user"));
   };
 
-  // Handle Changing Template
-  const handleSelectTemplate = (template: FrameTemplate) => {
-    setSelectedTemplate(template);
-    setCapturedShots([]); // Reset shots when changing collage format
+  // Switch to Camera Step
+  const handleStartCameraSession = () => {
+    setCapturedShots([]);
+    setCapturedImage(null);
     setStatusNotice("");
+    setCurrentStep("camera");
+  };
+
+  // Return to Select Frame Step
+  const handleBackToSelectFrame = () => {
+    stopCameraStream();
+    setCapturedShots([]);
+    setCurrentStep("select-frame");
   };
 
   // Helper to load an image from URL via Promise
@@ -209,7 +225,7 @@ export default function PhotoboothPage() {
     }
   };
 
-  // Snaps 1 single shot and either advances or triggers final compositing
+  // Snaps 1 single shot and advances to next pose or finishes
   const snapSingleShot = async () => {
     const video = videoRef.current;
     if (!video || video.videoWidth === 0 || video.videoHeight === 0) return;
@@ -260,10 +276,10 @@ export default function PhotoboothPage() {
     const updatedShots = [...capturedShots, shotDataUrl];
     setCapturedShots(updatedShots);
 
-    // Check if more shots are required for this collage template
+    // Check if more shots needed
     if (updatedShots.length < selectedTemplate.photoCount) {
       const nextPoseNumber = updatedShots.length + 1;
-      setStatusNotice(`Pose ${updatedShots.length} tersimpan! Siap untuk Pose ${nextPoseNumber}...`);
+      setStatusNotice(`Pose ${updatedShots.length} berhasil! Bersiap untuk Pose ${nextPoseNumber}...`);
       setIsProcessingCapture(false);
     } else {
       // All shots completed: Composite the whole Photostrip!
@@ -302,7 +318,6 @@ export default function PhotoboothPage() {
         const photoImg = await loadImage(shots[i]);
 
         ctx.save();
-        // Create rounded rect clip for the slot
         const rx = slot.rx || 14;
         ctx.beginPath();
         if (ctx.roundRect) {
@@ -340,9 +355,10 @@ export default function PhotoboothPage() {
         console.warn("SessionStorage save warning:", e);
       }
 
-      setPreviewStep("preview");
+      setCurrentStep("preview");
       setIsProcessingCapture(false);
       setStatusNotice("");
+      stopCameraStream();
 
       // Trigger celebratory confetti
       try {
@@ -366,7 +382,7 @@ export default function PhotoboothPage() {
     setCapturedShots([]);
     setCapturedImage(null);
     setStatusNotice("");
-    setPreviewStep("capture");
+    setCurrentStep("camera");
   };
 
   // Download photo
@@ -380,40 +396,51 @@ export default function PhotoboothPage() {
     document.body.removeChild(link);
   };
 
-  // Proceed to Audio Recording stage
-  const handleProceedToAudio = () => {
-    if (!capturedImage) return;
-    setShowNextModal(true);
-  };
-
-  // Current active slot aspect ratio for the live camera viewfinder
-  const currentSlot = selectedTemplate.slots[capturedShots.length] || selectedTemplate.slots[0];
-  const slotRatioStyle = {
-    aspectRatio: `${currentSlot.width} / ${currentSlot.height}`,
-  };
+  // Filter templates
+  const filteredTemplates = FRAME_TEMPLATES.filter((tmpl) => {
+    if (filterCount === "all") return true;
+    return tmpl.photoCount === filterCount;
+  });
 
   return (
     <div className="flex flex-col h-[100dvh] w-full bg-stone-950 text-stone-100 select-none overflow-hidden font-sans">
       {/* Hidden processing canvas */}
       <canvas ref={canvasRef} className="hidden" />
 
-      {/* TOP BAR */}
-      <header className="flex items-center justify-between px-4 py-3 bg-stone-900/80 backdrop-blur-md border-b border-stone-800/80 z-20 shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-600 via-amber-400 to-yellow-200 flex items-center justify-center shadow-md">
-            <Heart className="w-4 h-4 text-stone-950 fill-stone-950" />
-          </div>
+      {/* =========================================================================
+          TOP HEADER
+          ========================================================================= */}
+      <header className="flex items-center justify-between px-4 py-3.5 bg-stone-900/90 backdrop-blur-md border-b border-stone-800 z-30 shrink-0">
+        <div className="flex items-center gap-2.5">
+          {currentStep === "camera" ? (
+            <button
+              onClick={handleBackToSelectFrame}
+              className="p-1.5 -ml-1 text-stone-400 hover:text-stone-200 rounded-full hover:bg-stone-800 transition-colors flex items-center gap-1"
+            >
+              <ArrowLeft className="w-5 h-5" />
+              <span className="text-xs font-medium hidden sm:inline">Ganti Frame</span>
+            </button>
+          ) : (
+            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-600 via-amber-400 to-yellow-200 flex items-center justify-center shadow-md">
+              <Heart className="w-4 h-4 text-stone-950 fill-stone-950" />
+            </div>
+          )}
+
           <div>
-            <h1 className="text-sm font-semibold tracking-wide text-amber-200/90 leading-tight">
+            <h1 className="text-sm font-semibold tracking-wide text-amber-200/95 leading-tight">
               Virtual Photobooth
             </h1>
-            <p className="text-[11px] text-stone-400">Wedding Photostrip Studio</p>
+            <p className="text-[11px] text-stone-400">
+              {currentStep === "select-frame" && "Tahap 1: Pilih Desain Kolase"}
+              {currentStep === "camera" && `Tahap 2: Ambil Foto (${selectedTemplate.name})`}
+              {currentStep === "preview" && "Tahap 3: Pratinjau Photostrip"}
+            </p>
           </div>
         </div>
 
-        {previewStep === "capture" && (
+        {/* Camera Quick Controls */}
+        {currentStep === "camera" && (
           <div className="flex items-center gap-2">
-            {/* Timer Toggle */}
             <button
               onClick={() => setTimerSetting((prev) => (prev === 3 ? 0 : 3))}
               className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 ${
@@ -428,7 +455,6 @@ export default function PhotoboothPage() {
               <span>{timerSetting > 0 ? "3s" : "Off"}</span>
             </button>
 
-            {/* Flip Camera */}
             <button
               onClick={handleToggleFacingMode}
               disabled={cameraState !== "ready"}
@@ -442,57 +468,169 @@ export default function PhotoboothPage() {
         )}
       </header>
 
-      {/* MAIN VIEWPORT AREA */}
-      <main className="relative flex-1 flex items-center justify-center p-2 sm:p-4 overflow-hidden">
+      {/* =========================================================================
+          MAIN WORKFLOW CONTENT
+          ========================================================================= */}
+      <main className="relative flex-1 flex flex-col items-center justify-between p-3 sm:p-5 overflow-hidden">
         {/* Flash Effect Overlay */}
         <div
-          className={`absolute inset-0 bg-white pointer-events-none z-40 transition-opacity duration-200 ${
+          className={`absolute inset-0 bg-white pointer-events-none z-50 transition-opacity duration-200 ${
             flashActive ? "opacity-95" : "opacity-0"
           }`}
         />
 
-        {previewStep === "capture" ? (
-          /* ================= CAMERA CAPTURE VIEW ================= */
-          <div className="relative w-full h-full flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-6 max-h-full">
-            {/* Live Camera Viewfinder Box */}
-            <div
-              style={slotRatioStyle}
-              className="relative overflow-hidden rounded-2xl shadow-2xl bg-black border border-stone-800 flex items-center justify-center max-h-[72vh] sm:max-h-[80vh] w-auto transition-all duration-300"
-            >
+        {/* =====================================================================
+            STAGE 1: SELECT FRAME DESIGN (Katalog Visual Mockup)
+            ===================================================================== */}
+        {currentStep === "select-frame" && (
+          <div className="w-full h-full flex flex-col justify-between max-w-2xl mx-auto overflow-hidden">
+            {/* Title & Filter Tabs */}
+            <div className="shrink-0 flex flex-col items-center text-center gap-2 pt-1 pb-3">
+              <span className="text-[11px] font-bold tracking-widest text-amber-400 uppercase">
+                Pilih Format Photostrip
+              </span>
+              <h2 className="text-xl sm:text-2xl font-bold text-stone-100">
+                Pilih Jumlah Foto & Gaya Bingkai
+              </h2>
+
+              {/* Filter Pills */}
+              <div className="flex items-center gap-1.5 mt-1 overflow-x-auto p-1 bg-stone-900/80 rounded-full border border-stone-800">
+                {[
+                  { label: "Semua", value: "all" },
+                  { label: "1 Foto", value: 1 },
+                  { label: "2 Foto", value: 2 },
+                  { label: "3 Foto", value: 3 },
+                  { label: "4 Foto", value: 4 },
+                ].map((tab) => (
+                  <button
+                    key={tab.label}
+                    onClick={() => setFilterCount(tab.value as number | "all")}
+                    className={`px-3.5 py-1 rounded-full text-xs font-medium transition-all ${
+                      filterCount === tab.value
+                        ? "bg-amber-400 text-stone-950 font-bold shadow"
+                        : "text-stone-400 hover:text-stone-200"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Template Mockup Grid with real SVG renderings */}
+            <div className="flex-1 overflow-y-auto px-1 py-2 grid grid-cols-2 sm:grid-cols-3 gap-3.5 scrollbar-thin">
+              {filteredTemplates.map((tmpl) => {
+                const isSelected = selectedTemplate.id === tmpl.id;
+                return (
+                  <div
+                    key={tmpl.id}
+                    onClick={() => setSelectedTemplate(tmpl)}
+                    className={`group relative rounded-2xl cursor-pointer p-3 flex flex-col items-center justify-between transition-all duration-200 border text-center ${
+                      isSelected
+                        ? "bg-stone-900 border-amber-400 ring-2 ring-amber-400/30 shadow-xl shadow-amber-500/10"
+                        : "bg-stone-900/50 border-stone-800 hover:border-stone-700 hover:bg-stone-900/80"
+                    }`}
+                  >
+                    {/* Selected Check Badge */}
+                    {isSelected && (
+                      <div className="absolute top-2 right-2 z-20 w-6 h-6 rounded-full bg-amber-400 flex items-center justify-center text-stone-950 shadow-md">
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      </div>
+                    )}
+
+                    {/* Frame Aspect Badge */}
+                    <div className="absolute top-2 left-2 z-20 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-sm text-[10px] font-mono text-amber-200/90 font-semibold border border-white/10">
+                      {tmpl.badge}
+                    </div>
+
+                    {/* Realistic SVG Render Mockup Container */}
+                    <div className="w-full h-44 sm:h-52 my-2 flex items-center justify-center overflow-hidden rounded-xl bg-stone-950/80 p-2 border border-stone-800/80 shadow-inner">
+                      <div
+                        className="w-full h-full max-h-full flex items-center justify-center pointer-events-none [&>svg]:w-auto [&>svg]:h-full [&>svg]:max-h-full [&>svg]:object-contain drop-shadow-md"
+                        dangerouslySetInnerHTML={{
+                          __html: tmpl.getSvgContent(tmpl.width, tmpl.height),
+                        }}
+                      />
+                    </div>
+
+                    {/* Card Title & Desc */}
+                    <div className="w-full pt-1">
+                      <h3 className="text-xs sm:text-sm font-bold text-stone-100 group-hover:text-amber-300 transition-colors">
+                        {tmpl.name}
+                      </h3>
+                      <p className="text-[11px] text-stone-400 mt-0.5 line-clamp-1">
+                        {tmpl.description}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Bottom Bar: Action Button to proceed to Camera */}
+            <div className="shrink-0 pt-3 pb-2 w-full flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-stone-800/80 bg-stone-950">
+              <div className="text-center sm:text-left">
+                <span className="text-xs text-stone-400">Template Terpilih:</span>
+                <p className="text-sm font-bold text-amber-300">
+                  {selectedTemplate.name} ({selectedTemplate.photoCount} Pose)
+                </p>
+              </div>
+
+              <button
+                onClick={handleStartCameraSession}
+                className="w-full sm:w-auto flex items-center justify-center gap-2 py-3.5 px-8 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-stone-950 font-bold text-sm tracking-wide shadow-xl shadow-amber-500/25 transition-all active:scale-95"
+              >
+                <Camera className="w-4 h-4 text-stone-950" />
+                <span>Lanjut ke Kamera & Ambil Foto</span>
+                <ArrowRight className="w-4 h-4 ml-1" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* =====================================================================
+            STAGE 2: CAMERA MULTI-POSE SESSION (Ambil Foto Satu per Satu)
+            ===================================================================== */}
+        {currentStep === "camera" && (
+          <div className="w-full h-full flex flex-col items-center justify-between max-w-lg mx-auto overflow-hidden">
+            {/* Camera Viewfinder (SOLID DIMENSIONS - NEVER COLLAPSES) */}
+            <div className="relative w-full max-w-[420px] aspect-[3/4] rounded-3xl overflow-hidden shadow-2xl bg-black border-2 border-stone-800 flex items-center justify-center my-auto">
               {/* Camera Video Stream */}
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
-                className={`absolute inset-0 w-full h-full object-cover transition-transform ${
+                className={`w-full h-full object-cover transition-transform ${
                   cameraFacingMode === "user" ? "-scale-x-100" : ""
                 }`}
               />
 
               {/* Status Overlay Badge (Pose X of N) */}
-              <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/70 backdrop-blur-md border border-amber-400/40 text-xs font-semibold text-amber-200">
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-                <span>Pose {capturedShots.length + 1} dari {selectedTemplate.photoCount}</span>
+              <div className="absolute top-3.5 left-3.5 z-20 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-black/75 backdrop-blur-md border border-amber-400/50 text-xs font-bold text-amber-200 shadow-lg">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
+                <span>
+                  Pose {capturedShots.length + 1} dari {selectedTemplate.photoCount}
+                </span>
               </div>
 
               {/* Reset Sequence Button if at least 1 shot taken */}
               {capturedShots.length > 0 && (
                 <button
                   onClick={() => setCapturedShots([])}
-                  className="absolute top-3 right-3 z-20 flex items-center gap-1 px-2.5 py-1 rounded-full bg-stone-900/80 backdrop-blur-md border border-stone-700 text-[11px] font-medium text-stone-300 hover:text-white"
+                  className="absolute top-3.5 right-3.5 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-stone-900/90 backdrop-blur-md border border-stone-700 text-xs font-semibold text-stone-300 hover:text-white transition-all active:scale-95"
                   title="Ulangi dari Pose 1"
                 >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>Ulangi</span>
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Ulangi Pose</span>
                 </button>
               )}
 
               {/* Camera Loading Spinner */}
               {cameraState === "loading" && (
-                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-stone-950/80 backdrop-blur-sm gap-3">
-                  <RefreshCw className="w-8 h-8 text-amber-400 animate-spin" />
-                  <p className="text-xs text-stone-300 font-medium">Menghubungkan Kamera...</p>
+                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-stone-950/85 backdrop-blur-sm gap-3">
+                  <RefreshCw className="w-9 h-9 text-amber-400 animate-spin" />
+                  <p className="text-xs text-stone-200 font-medium">Menghubungkan Kamera...</p>
                 </div>
               )}
 
@@ -503,7 +641,7 @@ export default function PhotoboothPage() {
                   <p className="text-xs text-rose-200">{errorMessage}</p>
                   <button
                     onClick={handleRetryCamera}
-                    className="mt-2 px-4 py-2 bg-stone-800 hover:bg-stone-700 text-amber-200 text-xs font-semibold rounded-full border border-amber-500/30 active:scale-95 transition-all"
+                    className="mt-2 px-5 py-2.5 bg-stone-800 hover:bg-stone-700 text-amber-200 text-xs font-semibold rounded-full border border-amber-500/30 active:scale-95 transition-all"
                   >
                     Coba Lagi
                   </button>
@@ -513,7 +651,7 @@ export default function PhotoboothPage() {
               {/* Countdown Overlay (3, 2, 1) */}
               {countdown !== null && (
                 <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
-                  <div className="w-24 h-24 rounded-full border-4 border-amber-400 bg-stone-900/80 flex items-center justify-center animate-ping">
+                  <div className="w-24 h-24 rounded-full border-4 border-amber-400 bg-stone-900/90 flex items-center justify-center animate-ping">
                     <span className="text-5xl font-bold text-amber-300 font-mono">
                       {countdown}
                     </span>
@@ -522,162 +660,144 @@ export default function PhotoboothPage() {
               )}
             </div>
 
-            {/* MINI PHOTOSTRIP PROGRESS DOCK (Shows slots 1..N with thumbnails) */}
-            <div className="flex sm:flex-col items-center justify-center gap-1.5 p-2 rounded-2xl bg-stone-900/80 backdrop-blur-md border border-stone-800 shrink-0">
-              <span className="text-[10px] uppercase font-bold tracking-wider text-stone-400 sm:mb-1 hidden sm:block">
-                Slots
-              </span>
-              {Array.from({ length: selectedTemplate.photoCount }).map((_, idx) => {
-                const isTaken = idx < capturedShots.length;
-                const isCurrent = idx === capturedShots.length;
-                return (
-                  <div
-                    key={idx}
-                    className={`relative w-12 h-10 sm:w-14 sm:h-12 rounded-lg overflow-hidden border transition-all flex items-center justify-center ${
-                      isCurrent
-                        ? "border-amber-400 shadow-md shadow-amber-500/30 ring-2 ring-amber-400/40"
-                        : isTaken
-                        ? "border-emerald-500/80"
-                        : "border-stone-700/60 bg-stone-950/60"
-                    }`}
-                  >
-                    {isTaken ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={capturedShots[idx]}
-                        alt={`Pose ${idx + 1}`}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <span
-                        className={`text-xs font-mono font-bold ${
-                          isCurrent ? "text-amber-300 animate-pulse" : "text-stone-600"
-                        }`}
-                      >
-                        {idx + 1}
-                      </span>
-                    )}
-
-                    {isTaken && (
-                      <div className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 flex items-center justify-center text-[8px] text-stone-950 font-bold">
-                        ✓
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : (
-          /* ================= PHOTO PREVIEW VIEW ================= */
-          <div className="relative w-full h-full flex flex-col items-center justify-center overflow-y-auto py-2">
-            <div className="relative max-h-[75vh] w-auto overflow-hidden rounded-2xl shadow-2xl border border-amber-400/30 transition-all flex items-center justify-center">
-              {capturedImage && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={capturedImage}
-                  alt="Hasil Photostrip Kolase"
-                  className="max-h-[75vh] w-auto object-contain rounded-2xl bg-stone-900 shadow-2xl"
-                />
+            {/* PROGRESS SLOTS DOCK (Horizontal Slot Progress Display) */}
+            <div className="shrink-0 w-full flex flex-col items-center gap-2 pt-2 pb-1">
+              {statusNotice && (
+                <p className="text-xs font-semibold text-amber-300 animate-pulse text-center">
+                  {statusNotice}
+                </p>
               )}
 
-              {/* Success Badge */}
-              <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1 bg-stone-950/85 backdrop-blur-md rounded-full border border-amber-400/40 text-[11px] font-medium text-amber-200 shadow-lg">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Photostrip Siap</span>
+              <div className="flex items-center justify-center gap-2 p-2 rounded-2xl bg-stone-900/90 backdrop-blur-md border border-stone-800">
+                {Array.from({ length: selectedTemplate.photoCount }).map((_, idx) => {
+                  const isTaken = idx < capturedShots.length;
+                  const isCurrent = idx === capturedShots.length;
+                  return (
+                    <div
+                      key={idx}
+                      className={`relative w-12 h-14 rounded-xl overflow-hidden border-2 transition-all flex items-center justify-center ${
+                        isCurrent
+                          ? "border-amber-400 ring-2 ring-amber-400/40 bg-amber-400/10 shadow-md shadow-amber-500/30"
+                          : isTaken
+                          ? "border-emerald-500 bg-stone-900"
+                          : "border-stone-800 bg-stone-950/60"
+                      }`}
+                    >
+                      {isTaken ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={capturedShots[idx]}
+                          alt={`Pose ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span
+                          className={`text-xs font-mono font-bold ${
+                            isCurrent ? "text-amber-300 animate-pulse" : "text-stone-600"
+                          }`}
+                        >
+                          {idx + 1}
+                        </span>
+                      )}
+
+                      {isTaken && (
+                        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center text-[9px] text-stone-950 font-bold">
+                          ✓
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
+
+              {/* Shutter Button */}
+              <div className="pt-2 flex items-center justify-center">
+                <button
+                  onClick={triggerCapture}
+                  disabled={cameraState !== "ready" || isProcessingCapture}
+                  className="group relative flex items-center justify-center w-20 h-20 rounded-full transition-transform active:scale-90 disabled:opacity-50 disabled:pointer-events-none"
+                  aria-label={`Ambil Pose ${capturedShots.length + 1}`}
+                >
+                  <div className="absolute inset-0 rounded-full border-4 border-amber-400/60 group-hover:border-amber-400 group-hover:scale-105 transition-all shadow-lg shadow-amber-500/15" />
+                  <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-amber-100 via-white to-amber-50 flex items-center justify-center text-stone-900 shadow-md">
+                    <Camera className="w-7 h-7 text-stone-800" />
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* =====================================================================
+            STAGE 3: PREVIEW & AUDIO HANDOFF (Disatukan ke Frame)
+            ===================================================================== */}
+        {currentStep === "preview" && (
+          <div className="w-full h-full flex flex-col items-center justify-between max-w-md mx-auto overflow-hidden">
+            {/* High-res Composited Photostrip Display */}
+            <div className="flex-1 w-full flex items-center justify-center overflow-y-auto py-2">
+              <div className="relative max-h-[72vh] w-auto overflow-hidden rounded-2xl shadow-2xl border border-amber-400/30 flex items-center justify-center">
+                {capturedImage && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={capturedImage}
+                    alt="Hasil Photostrip Kolase"
+                    className="max-h-[72vh] w-auto object-contain rounded-2xl bg-stone-900 shadow-2xl"
+                  />
+                )}
+
+                <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1 bg-stone-950/85 backdrop-blur-md rounded-full border border-amber-400/40 text-[11px] font-medium text-amber-200 shadow-lg">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Photostrip Selesai</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Action Buttons */}
+            <div className="shrink-0 w-full flex flex-col gap-2.5 pt-2 pb-1 border-t border-stone-800/80">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleRetakeAll}
+                  className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-stone-800 hover:bg-stone-750 active:bg-stone-700 border border-stone-700 text-stone-200 text-sm font-semibold transition-all active:scale-95"
+                >
+                  <RotateCcw className="w-4 h-4 text-stone-400" />
+                  <span>Foto Ulang</span>
+                </button>
+
+                <button
+                  onClick={handleBackToSelectFrame}
+                  className="flex items-center justify-center gap-1.5 py-3 px-4 rounded-xl bg-stone-800 hover:bg-stone-750 active:bg-stone-700 border border-stone-700 text-stone-200 text-sm font-semibold transition-all active:scale-95"
+                >
+                  <Layers className="w-4 h-4 text-stone-400" />
+                  <span>Ganti Frame</span>
+                </button>
+
+                <button
+                  onClick={handleDownload}
+                  className="flex items-center justify-center p-3 rounded-xl bg-stone-800 hover:bg-stone-750 active:bg-stone-700 border border-stone-700 text-amber-200 transition-all active:scale-95"
+                  title="Unduh Photostrip ke Galeri HP"
+                  aria-label="Unduh Photostrip"
+                >
+                  <Download className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Proceed to Audio Recording */}
+              <button
+                onClick={() => setShowNextModal(true)}
+                className="w-full flex items-center justify-center gap-2 py-3.5 px-5 rounded-xl bg-gradient-to-r from-amber-500 via-amber-400 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-stone-950 font-bold text-sm tracking-wide shadow-lg shadow-amber-500/25 transition-all active:scale-98"
+              >
+                <Mic className="w-4 h-4 text-stone-950" />
+                <span>Lanjut ke Rekaman Suara</span>
+                <ArrowRight className="w-4 h-4 ml-1" />
+              </button>
             </div>
           </div>
         )}
       </main>
 
-      {/* BOTTOM CONTROLS & SELECTION DOCK */}
-      <footer className="shrink-0 pb-6 pt-3 px-4 bg-stone-900/90 backdrop-blur-md border-t border-stone-800/80 z-20 flex flex-col gap-3">
-        {previewStep === "capture" ? (
-          <>
-            {/* Status Notice if taking multiple poses */}
-            {statusNotice && (
-              <div className="text-center text-xs font-medium text-amber-300 animate-pulse -mt-1">
-                {statusNotice}
-              </div>
-            )}
-
-            {/* Collage Format Selector Pills */}
-            <div className="flex items-center justify-center gap-2 overflow-x-auto py-1 scrollbar-none">
-              {FRAME_TEMPLATES.map((tmpl) => {
-                const isSelected = selectedTemplate.id === tmpl.id;
-                return (
-                  <button
-                    key={tmpl.id}
-                    onClick={() => handleSelectTemplate(tmpl)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all duration-200 active:scale-95 ${
-                      isSelected
-                        ? "bg-gradient-to-r from-amber-500/30 via-yellow-500/20 to-amber-500/30 text-amber-200 border border-amber-400/70 shadow-sm shadow-amber-500/20"
-                        : "bg-stone-800/80 text-stone-400 border border-stone-700/60 hover:text-stone-200 hover:bg-stone-800"
-                    }`}
-                  >
-                    <Layers className="w-3 h-3 text-amber-400" />
-                    <span>{tmpl.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Shutter Button Row */}
-            <div className="flex items-center justify-center pt-1">
-              <button
-                onClick={triggerCapture}
-                disabled={cameraState !== "ready" || isProcessingCapture}
-                className="group relative flex items-center justify-center w-20 h-20 rounded-full transition-transform active:scale-90 disabled:opacity-50 disabled:pointer-events-none"
-                aria-label={`Ambil Foto ${capturedShots.length + 1}`}
-              >
-                {/* Outer Ring */}
-                <div className="absolute inset-0 rounded-full border-4 border-amber-400/60 group-hover:border-amber-400 group-hover:scale-105 transition-all shadow-lg shadow-amber-500/10" />
-                {/* Inner Shutter Core */}
-                <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-amber-100 via-white to-amber-50 flex items-center justify-center text-stone-900 shadow-md">
-                  <Camera className="w-7 h-7 text-stone-800" />
-                </div>
-              </button>
-            </div>
-          </>
-        ) : (
-          /* PREVIEW ACTION BUTTONS */
-          <div className="flex flex-col gap-2.5 max-w-md mx-auto w-full">
-            <div className="flex items-center gap-2">
-              {/* Retake All Button */}
-              <button
-                onClick={handleRetakeAll}
-                className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-stone-800 hover:bg-stone-750 active:bg-stone-700 border border-stone-700 text-stone-200 text-sm font-semibold transition-all active:scale-95"
-              >
-                <RotateCcw className="w-4 h-4 text-stone-400" />
-                <span>Foto Ulang</span>
-              </button>
-
-              {/* Download Photostrip Button */}
-              <button
-                onClick={handleDownload}
-                className="flex items-center justify-center p-3 rounded-xl bg-stone-800 hover:bg-stone-750 active:bg-stone-700 border border-stone-700 text-amber-200 transition-all active:scale-95"
-                title="Unduh Photostrip ke Galeri"
-                aria-label="Unduh Photostrip"
-              >
-                <Download className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Proceed to Audio Recording Button */}
-            <button
-              onClick={handleProceedToAudio}
-              className="w-full flex items-center justify-center gap-2 py-3.5 px-5 rounded-xl bg-gradient-to-r from-amber-500 via-amber-400 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-stone-950 font-bold text-sm tracking-wide shadow-lg shadow-amber-500/25 transition-all active:scale-98"
-            >
-              <Mic className="w-4 h-4 text-stone-950" />
-              <span>Lanjut ke Rekaman Suara</span>
-              <ArrowRight className="w-4 h-4 ml-1" />
-            </button>
-          </div>
-        )}
-      </footer>
-
-      {/* CONFIRMATION / NEXT STAGE MODAL */}
+      {/* =========================================================================
+          CONFIRMATION / NEXT STAGE MODAL
+          ========================================================================= */}
       {showNextModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="relative w-full max-w-sm bg-stone-900 border border-amber-400/40 rounded-2xl p-6 shadow-2xl text-center flex flex-col items-center gap-4">
@@ -695,7 +815,7 @@ export default function PhotoboothPage() {
             <div>
               <h3 className="text-lg font-bold text-stone-100">Photostrip Berhasil Disimpan!</h3>
               <p className="text-xs text-stone-400 mt-1.5 leading-relaxed">
-                Seluruh {selectedTemplate.photoCount} foto kolase Anda telah tergabung dengan indah. Langkah berikutnya adalah merekam pesan suara untuk kedua mempelai.
+                Seluruh {selectedTemplate.photoCount} foto kolase Anda telah tergabung rapi ke dalam bingkai pilihan. Langkah berikutnya adalah merekam pesan suara untuk kedua mempelai.
               </p>
             </div>
 
